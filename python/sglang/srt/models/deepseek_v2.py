@@ -1165,7 +1165,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.input_is_scattered = (
             previous_layer_info.ffn_input_mode == _FFNInputMode.SCATTERED
         )
-        self.is_last_layer = self.layer_id == config.num_hidden_layers - 1
+        self.is_last_layer = self.layer_id == 2 # config.num_hidden_layers - 1
 
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
@@ -1377,6 +1377,7 @@ class DeepseekV2Model(nn.Module):
             config.hidden_size,
             enable_tp=not global_server_args_dict["enable_dp_attention"],
         )
+        print("hello yongwww")
         self.layers = nn.ModuleList(
             [
                 DeepseekV2DecoderLayer(
@@ -1385,7 +1386,7 @@ class DeepseekV2Model(nn.Module):
                     quant_config=quant_config,
                     prefix=add_prefix(f"layers.{layer_id}", prefix),
                 )
-                for layer_id in range(config.num_hidden_layers)
+                for layer_id in range(3) # range(config.num_hidden_layers)
             ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1506,7 +1507,7 @@ class DeepseekV2ForCausalLM(nn.Module):
     def post_load_weights(self):
 
         # Perform post-processing after loading weights
-        for layer_id in range(self.config.num_hidden_layers):
+        for layer_id in range(3): #range(self.config.num_hidden_layers):
             self_attn = self.model.layers[layer_id].self_attn
             if hasattr(self_attn.kv_b_proj, "qweight"):
                 # AWQ compatible
@@ -1644,7 +1645,7 @@ class DeepseekV2ForCausalLM(nn.Module):
             for moe_layer in tqdm(
                 range(
                     self.config.first_k_dense_replace,
-                    self.config.num_hidden_layers,
+                    3,#self.config.num_hidden_layers,
                     self.config.moe_layer_freq,
                 ),
                 desc=f"Cloning {self.n_share_experts_fusion} "
@@ -1696,7 +1697,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                     name_list = name.split(".")
                     if (
                         len(name_list) >= 3
-                        and int(name_list[2]) >= self.config.num_hidden_layers
+                        and int(name_list[2]) >= 3 # self.config.num_hidden_layers
                     ):
                         continue
             if "rotary_emb.inv_freq" in name:
