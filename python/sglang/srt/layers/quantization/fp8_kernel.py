@@ -22,8 +22,8 @@ import torch
 import triton
 import triton.language as tl
 import flashinfer
-from flashinfer.gemm import get_gemm_sm100_module
-from flashinfer.utils import _get_cache_buf
+from flashinfer.gemm import gemm_fp8_nt_groupwise, gemm_fp8_nt_blockscaled
+
 
 from sglang.srt.utils import get_bool_env_var, get_device_sm, is_cuda
 
@@ -716,74 +716,6 @@ def get_w8a8_block_fp8_configs(
     return None
 
 
-def gemm_fp8_nt_blockscaled(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    a_scale: torch.Tensor,
-    b_scale: torch.Tensor,
-    out: Optional[torch.Tensor] = None,
-    out_dtype: Optional[torch.dtype] = None,
-) -> torch.Tensor:
-    workspace_buffer = _get_cache_buf(
-        "gemm_fp8_nt_blockscaled_workspace", 32 * 1024 * 1024, a.device
-    )
-    if a.ndim != 2 or b.ndim != 2:
-        raise ValueError(f"Shape mismatch. a.shape = {a.shape}, b.shape = {b.shape}")
-    m = a.shape[0]
-    n = b.shape[0]
-    if a.shape[1] != b.shape[1]:
-        raise ValueError(
-            f"Shape mismatch. a.shape[1] = {a.shape[1]}, b.shape[1] = {b.shape[1]}"
-        )
-
-    if out is None:
-        out_dtype = out_dtype or torch.bfloat16
-        out = torch.empty(
-            a.shape[0],
-            b.shape[0],
-            device=a.device,
-            dtype=out_dtype,
-        )
-    get_gemm_sm100_module().gemm_fp8_nt_blockscaled.default(
-        workspace_buffer, a, b, a_scale, b_scale, out
-    )
-    return out
-
-
-def gemm_fp8_nt_groupwise(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    a_scale: torch.Tensor,
-    b_scale: torch.Tensor,
-    out: Optional[torch.Tensor] = None,
-    out_dtype: Optional[torch.dtype] = None,
-) -> torch.Tensor:
-    workspace_buffer = _get_cache_buf(
-        "gemm_fp8_nt_groupwise_workspace", 32 * 1024 * 1024, a.device
-    )
-    if a.ndim != 2 or b.ndim != 2:
-        raise ValueError(f"Shape mismatch. a.shape = {a.shape}, b.shape = {b.shape}")
-    m = a.shape[0]
-    n = b.shape[0]
-    if a.shape[1] != b.shape[1]:
-        raise ValueError(
-            f"Shape mismatch. a.shape[1] = {a.shape[1]}, b.shape[1] = {b.shape[1]}"
-        )
-
-    if out is None:
-        out_dtype = out_dtype or torch.bfloat16
-        out = torch.empty(
-            a.shape[0],
-            b.shape[0],
-            device=a.device,
-            dtype=out_dtype,
-        )
-    get_gemm_sm100_module().gemm_fp8_nt_groupwise.default(
-        workspace_buffer, a, b, a_scale, b_scale, out
-    )
-    return out
-
-
 def w8a8_block_fp8_matmul(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -860,7 +792,10 @@ def w8a8_block_fp8_matmul(
         else:
             deep_gemm_gemm_nt_f8f8bf16((A, As), (B, Bs), C)
     elif _ENABLE_CUTLASS_GEMM:
-        gemm_fp8_nt_blockscaled(A, B, As, Bs, C)
+        # transpose As, and Bs
+        new_As = As.transpose(0, 1)
+        new_Bs = Bs.transpose(0, 1)
+        gemm_fp8_nt_groupwise(A, B, new_As, new_Bs, C)
     else:
         kernel = (
             _w8a8_block_fp8_matmul_unrolledx4
