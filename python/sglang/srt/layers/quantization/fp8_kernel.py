@@ -860,7 +860,7 @@ def w8a8_block_fp8_matmul(
         else:
             deep_gemm_gemm_nt_f8f8bf16((A, As), (B, Bs), C)
     elif _ENABLE_CUTLASS_GEMM:
-        gemm_fp8_nt_blockscaled(A, As, B, Bs, C)
+        gemm_fp8_nt_blockscaled(A, B, As, Bs, C)
     else:
         kernel = (
             _w8a8_block_fp8_matmul_unrolledx4
