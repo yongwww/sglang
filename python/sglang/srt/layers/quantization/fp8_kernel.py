@@ -793,8 +793,8 @@ def w8a8_block_fp8_matmul(
             deep_gemm_gemm_nt_f8f8bf16((A, As), (B, Bs), C)
     elif _ENABLE_CUTLASS_GEMM:
         # transpose As, and Bs
-        new_As = As.transpose(0, 1)
-        new_Bs = Bs.transpose(0, 1)
+        new_As = As.transpose(0, 1).contiguous()
+        new_Bs = Bs.transpose(0, 1).contiguous()
         gemm_fp8_nt_groupwise(A, B, new_As, new_Bs, C)
     else:
         kernel = (
