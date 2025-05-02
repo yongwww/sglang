@@ -28,6 +28,8 @@ from torch import nn
 from tqdm import tqdm
 from transformers import PretrainedConfig
 
+os.environ["SGL_ENABLE_CUTLASS_GEMM"] = "1"
+
 from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
@@ -1160,6 +1162,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                 tp_rank=mlp_tp_rank,
                 tp_size=mlp_tp_size,
             )
+        config.num_hidden_layers = 3
 
         self.input_is_scattered = (
             previous_layer_info.ffn_input_mode == _FFNInputMode.SCATTERED
@@ -1376,6 +1379,7 @@ class DeepseekV2Model(nn.Module):
             config.hidden_size,
             enable_tp=not global_server_args_dict["enable_dp_attention"],
         )
+        config.num_hidden_layers = 3
         self.layers = nn.ModuleList(
             [
                 DeepseekV2DecoderLayer(
@@ -1506,6 +1510,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         )
 
     def post_load_weights(self, is_nextn=False):
+        self.config.num_hidden_layers = 3
 
         # Perform post-processing after loading weights
         layer_ids = (
@@ -1625,6 +1630,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                 self_attn.use_deep_gemm_bmm = True
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]], is_nextn=False):
+        self.config.num_hidden_layers = 3
         if is_nextn:
             if hasattr(self.config, "num_nextn_predict_layers"):
                 num_nextn_layers = self.config.num_nextn_predict_layers
