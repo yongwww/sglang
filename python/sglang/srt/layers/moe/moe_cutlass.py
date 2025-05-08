@@ -4,7 +4,10 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
-from sgl_kernel import (fp8_blockwise_scaled_grouped_mm, prepare_moe_input, silu_and_mul)
+from sgl_kernel import silu_and_mul
+
+import flashinfer
+from flashinfer.gemm import group_gemm_fp8_nt_groupwise
 
 
 import torch
@@ -97,8 +100,8 @@ def cutlass_fused_experts_fp8_bs(
     a_map = torch.empty((topk_ids.numel()), dtype=torch.int32, device=device)
     c_map = torch.empty((topk_ids.numel()), dtype=torch.int32, device=device)
 
-    prepare_moe_input(topk_ids, expert_offsets, problem_sizes1,
-                                problem_sizes2, a_map, c_map, num_experts, n, k)
+    # prepare_moe_input(topk_ids, expert_offsets, problem_sizes1,
+    #                             problem_sizes2, a_map, c_map, num_experts, n, k)
 
     rep_a_q = a_q.view(dtype=torch.uint8)[a_map].view(dtype=a_q.dtype)
     rep_a1_scales = a1_scale[a_map]
@@ -110,9 +113,10 @@ def cutlass_fused_experts_fp8_bs(
     w1_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
 
 
-    fp8_blockwise_scaled_grouped_mm(c1, rep_a_q, w1_q, rep_a1_scales, w1_scale,
-                       a1_strides, a1_strides, c1_strides, a1_sf_layout, 
-                       w1_sf_layout, problem_sizes1, expert_offsets[:-1])
+    # fp8_blockwise_scaled_grouped_mm(c1, rep_a_q, w1_q, rep_a1_scales, w1_scale,
+    #                    a1_strides, a1_strides, c1_strides, a1_sf_layout,
+    #                    w1_sf_layout, problem_sizes1, expert_offsets[:-1])
+    group_gemm_fp8_nt_groupwise(a=rep_a_q, b=w1_q, a_scale=rep_a1_scales, b_scale=w1_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c1)
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
     silu_and_mul(intermediate, c1)
@@ -124,8 +128,9 @@ def cutlass_fused_experts_fp8_bs(
     a2_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
     w2_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
     
-    fp8_blockwise_scaled_grouped_mm(c2, intemediate_q, w2_q, a2_scale, w2_scale, a2_strides,
-                       a2_strides, c2_strides, a2_sf_layout, w2_sf_layout, problem_sizes2,
-                       expert_offsets[:-1])
+    # fp8_blockwise_scaled_grouped_mm(c2, intemediate_q, w2_q, a2_scale, w2_scale, a2_strides,
+    #                    a2_strides, c2_strides, a2_sf_layout, w2_sf_layout, problem_sizes2,
+    #                    expert_offsets[:-1])
+    group_gemm_fp8_nt_groupwise(a=intemediate_q, b=w2_q, a_scale=a2_scale, b_scale=w2_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c2)
     return (c2[c_map].view(m, topk, k) *
             topk_weights.view(m, topk, 1).to(out_dtype)).sum(dim=1)
