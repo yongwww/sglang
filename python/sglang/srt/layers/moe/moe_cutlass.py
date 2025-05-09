@@ -58,7 +58,10 @@ def cutlass_fused_experts_fp8_bs(
 
     Returns:
     - torch.Tensor: The fp16 output tensor after applying the MoE layer.
-    """    
+    """
+    print(f"w1_q: {w1_q.shape}, w2_q: {w2_q.shape}, w1_scale: {w1_scale.shape}, w2_scale: {w2_scale.shape}, "
+        f"topk_weights: {topk_weights.shape}, topk_ids: {topk_ids.shape}, a1_strides: {a1_strides.shape}, "
+        f"c1_strides: {c1_strides.shape}, a2_strides: {a2_strides.shape}, c2_strides: {c2_strides.shape}")
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert w1_q.dtype == torch.float8_e4m3fn
     assert w2_q.dtype == torch.float8_e4m3fn
@@ -112,7 +115,8 @@ def cutlass_fused_experts_fp8_bs(
     a1_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
     w1_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
 
-    print(f"a_q: {a_q.shape}, rep_a_q: {rep_a_q.shape}, topk_ids: {topk_ids.shape}")
+    print(f"rep_a_q: {rep_a_q.shape}, w1_q: {w1_q.shape}, topk_ids: {topk_ids.shape}"
+          f"rep_a1_scales: {rep_a1_scales.shape}, w1_scale: {w1_scale.shape}")
 
 
 
