@@ -934,9 +934,9 @@ class Fp8MoEMethod:
         
         if get_bool_env_var("USE_CUTLASS_MOE") \
             and self.block_quant \
-            and self.quant_config.weight_block_size == (128, 128):
+            and list(self.quant_config.weight_block_size) == [128, 128]:
             # TODO (yongwww): check if we need to return here
-            cutlass_fused_experts_fp8_bs(
+            return cutlass_fused_experts_fp8_bs(
                 x,
                 layer.w13_weight,
                 layer.w2_weight,
