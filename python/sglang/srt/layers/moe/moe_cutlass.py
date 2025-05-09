@@ -59,7 +59,7 @@ def cutlass_fused_experts_fp8_bs(
     Returns:
     - torch.Tensor: The fp16 output tensor after applying the MoE layer.
     """
-    print(f"w1_q: {w1_q.shape}, w2_q: {w2_q.shape}, w1_scale: {w1_scale.shape}, w2_scale: {w2_scale.shape}, "
+    print(f"a: {a.shape}, w1_q: {w1_q.shape}, w2_q: {w2_q.shape}, w1_scale: {w1_scale.shape}, w2_scale: {w2_scale.shape}, "
         f"topk_weights: {topk_weights.shape}, topk_ids: {topk_ids.shape}, a1_strides: {a1_strides.shape}, "
         f"c1_strides: {c1_strides.shape}, a2_strides: {a2_strides.shape}, c2_strides: {c2_strides.shape}")
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
@@ -129,7 +129,7 @@ def cutlass_fused_experts_fp8_bs(
     # a: 1, 2, 3, 4, 5 => 15 x k
     # ptr: 0, 1, 3, 6, 10, 15
 
-    # group_gemm_fp8_nt_groupwise(a=rep_a_q, b=w1_q, a_scale=rep_a1_scales, b_scale=w1_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c1)
+    group_gemm_fp8_nt_groupwise(a=rep_a_q, b=w1_q, a_scale=rep_a1_scales, b_scale=w1_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c1)
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
     silu_and_mul(intermediate, c1)
