@@ -1185,7 +1185,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.input_is_scattered = (
             previous_layer_info.ffn_input_mode == _FFNInputMode.SCATTERED
         )
-        config.num_hidden_layers = 3
         self.is_last_layer = self.layer_id == config.num_hidden_layers - 1
 
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1399,7 +1398,6 @@ class DeepseekV2Model(nn.Module):
             enable_tp=not global_server_args_dict["enable_dp_attention"],
         )
         self.alt_stream = torch.cuda.Stream()
-        config.num_hidden_layers = 3
         self.layers = nn.ModuleList(
             [
                 DeepseekV2DecoderLayer(
@@ -1535,7 +1533,6 @@ class DeepseekV2ForCausalLM(nn.Module):
     def post_load_weights(self, is_nextn=False):
 
         # Perform post-processing after loading weights
-        self.config.num_hidden_layers = 3
         layer_ids = (
             range(self.config.num_hidden_layers)
             if not is_nextn
@@ -1658,7 +1655,6 @@ class DeepseekV2ForCausalLM(nn.Module):
                 num_nextn_layers = self.config.num_nextn_predict_layers
                 assert num_nextn_layers == 1, "Only 1 nextn layer is supportted"
                 # compatible with old design
-                self.config.num_hidden_layers = 3
                 nextn_layer_id = (
                     0
                     if self.config.num_hidden_layers == 1
@@ -1694,7 +1690,6 @@ class DeepseekV2ForCausalLM(nn.Module):
                     "up_proj.weight_scale_inv",
                 ]
             names_to_remove = []
-            self.config.num_hidden_layers = 3
 
             moe_layers = (
                 range(
@@ -1758,7 +1753,6 @@ class DeepseekV2ForCausalLM(nn.Module):
             ]
 
         params_dict = dict(self.named_parameters())
-        self.config.num_hidden_layers = 3
         for name, loaded_weight in weights:
             if not is_nextn:
                 if hasattr(self.config, "num_nextn_predict_layers"):
