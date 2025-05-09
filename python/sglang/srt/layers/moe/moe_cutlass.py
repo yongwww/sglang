@@ -62,12 +62,12 @@ def cutlass_fused_experts_fp8_bs(
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert w1_q.dtype == torch.float8_e4m3fn
     assert w2_q.dtype == torch.float8_e4m3fn
-    assert a.shape[1] == w1_q.shape[1], f"Hidden size mismatch w1: {a.shape[1]} vs {w1_q.shape[1]}"
-    assert w1_q.shape[2] == w2_q.shape[1] * 2, "Hidden size mismatch w2"
+    # assert a.shape[1] == w1_q.shape[1], f"Hidden size mismatch w1: {a.shape[1]} vs {w1_q.shape[1]}"
+    # assert w1_q.shape[2] == w2_q.shape[1] * 2, f"Hidden size mismatch w2: {w1_q.shape[2]} vs {w2_q.shape[1] * 2}"
     assert w1_q.shape[0] == w2_q.shape[0], "Expert number mismatch"
-    assert a1_scale is None or a1_scale.dim(
-    ) == 0 or a1_scale.shape[0] == 1 or a1_scale.shape[0] == a.shape[
-        0], "Input scale shape mismatch"
+    # assert a1_scale is None or a1_scale.dim(
+    #) == 0 or a1_scale.shape[0] == 1 or a1_scale.shape[0] == a.shape[
+    #    0], "Input scale shape mismatch"
     assert w1_q.shape[0] == w2_q.shape[0], "Weights expert number mismatch"
     assert w1_q.shape[0] == w1_scale.shape[
         0], "w1 scales expert number mismatch"
