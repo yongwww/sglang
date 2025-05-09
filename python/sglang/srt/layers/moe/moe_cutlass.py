@@ -62,7 +62,7 @@ def cutlass_fused_experts_fp8_bs(
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert w1_q.dtype == torch.float8_e4m3fn
     assert w2_q.dtype == torch.float8_e4m3fn
-    assert a.shape[1] == w1_q.shape[1], "Hidden size mismatch w1"
+    assert a.shape[1] == w1_q.shape[1], f"Hidden size mismatch w1: {a.shape[1]} vs {w1_q.shape[1]}"
     assert w1_q.shape[2] == w2_q.shape[1] * 2, "Hidden size mismatch w2"
     assert w1_q.shape[0] == w2_q.shape[0], "Expert number mismatch"
     assert a1_scale is None or a1_scale.dim(
@@ -112,11 +112,20 @@ def cutlass_fused_experts_fp8_bs(
     a1_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
     w1_sf_layout = torch.empty((num_experts, 5), device=device, dtype=torch.int)
 
+    print(f"a_q: {a_q.shape}, rep_a_q: {rep_a_q.shape}, topk_ids: {topk_ids.shape}")
+
+
 
     # fp8_blockwise_scaled_grouped_mm(c1, rep_a_q, w1_q, rep_a1_scales, w1_scale,
     #                    a1_strides, a1_strides, c1_strides, a1_sf_layout,
     #                    w1_sf_layout, problem_sizes1, expert_offsets[:-1])
-    group_gemm_fp8_nt_groupwise(a=rep_a_q, b=w1_q, a_scale=rep_a1_scales, b_scale=w1_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c1)
+    # a: MXK
+    # b: Nxk
+    # scale:
+    # a: 1, 2, 3, 4, 5 => 15 x k
+    # ptr: 0, 1, 3, 6, 10, 15
+
+    # group_gemm_fp8_nt_groupwise(a=rep_a_q, b=w1_q, a_scale=rep_a1_scales, b_scale=w1_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c1)
 
     intermediate = torch.empty((m * topk, n), device=device, dtype=out_dtype)
     silu_and_mul(intermediate, c1)
@@ -131,6 +140,6 @@ def cutlass_fused_experts_fp8_bs(
     # fp8_blockwise_scaled_grouped_mm(c2, intemediate_q, w2_q, a2_scale, w2_scale, a2_strides,
     #                    a2_strides, c2_strides, a2_sf_layout, w2_sf_layout, problem_sizes2,
     #                    expert_offsets[:-1])
-    group_gemm_fp8_nt_groupwise(a=intemediate_q, b=w2_q, a_scale=a2_scale, b_scale=w2_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c2)
+    # group_gemm_fp8_nt_groupwise(a=intemediate_q, b=w2_q, a_scale=a2_scale, b_scale=w2_scale, m_indptr=, scale_granularity_mnk=(1, 128, 128), out=c2)
     return (c2[c_map].view(m, topk, k) *
             topk_weights.view(m, topk, 1).to(out_dtype)).sum(dim=1)
