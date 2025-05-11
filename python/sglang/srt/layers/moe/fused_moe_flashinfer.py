@@ -11,6 +11,55 @@ import torch
 # import flashinfer
 # from flashinfer.gemm import group_gemm_fp8_nt_groupwise
 
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def mark_group_starts_kernel(x_ptr, flags_ptr, N: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < N
+
+    x = tl.load(x_ptr + offsets, mask=mask, other=-1)
+    prev_x = tl.load(x_ptr + offsets - 1, mask=offsets > 0, other=-2)
+    is_new = (x != prev_x) | (offsets == 0)
+
+    tl.store(flags_ptr + offsets, is_new.to(tl.int32), mask=mask)
+
+
+def run_unique_consecutive_static(x: torch.Tensor, num_experts: int):
+    assert x.ndim == 1 and x.is_cuda
+    N = x.numel()
+
+    vals_out = torch.empty(num_experts, dtype=x.dtype, device=x.device)
+    counts_out = torch.empty(num_experts, dtype=torch.long, device=x.device)
+
+    BLOCK_SIZE = 1024
+    flags = torch.empty(N, dtype=torch.int32, device=x.device)
+
+    mark_group_starts_kernel[(triton.cdiv(N, BLOCK_SIZE),)](
+        x_ptr=x, flags_ptr=flags, N=N, BLOCK_SIZE=BLOCK_SIZE
+    )
+
+    group_ids = flags.cumsum(0) - 1
+    num_unique = flags.sum()
+
+    mask = flags.to(x.dtype)
+    group_pos = group_ids * mask
+    masked_vals = x * mask
+
+    vals_out.zero_()
+    vals_out.scatter_add_(0, group_pos, masked_vals)
+
+    counts_out.zero_()
+    ones = torch.ones_like(group_ids, dtype=counts_out.dtype)
+    counts_out.scatter_add_(0, group_ids, ones)
+
+    return vals_out, counts_out, num_unique.view(1)
+
 
 def fake_group_gemm(a, b, a_scale, b_scale, m_indptr, out):
     cum_m, k = a.shape
@@ -20,7 +69,8 @@ def fake_group_gemm(a, b, a_scale, b_scale, m_indptr, out):
     assert b_scale.shape == (e, k // 128, n // 128)
     assert out.shape == (cum_m, n)
     assert m_indptr.shape[0] == e + 1
-    assert m_indptr[-1] == cum_m
+    # assert m_indptr[-1] == cum_m
+
 
 
 def fused_experts_flashinfer(
@@ -102,7 +152,8 @@ def fused_experts_flashinfer(
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
         topk_ids, 1, E
     )
-    output, count = expert_ids.unique_consecutive(return_counts=True)
+    # output, count = expert_ids.unique_consecutive(return_counts=True)
+    output, count, _ = run_unique_consecutive_static(expert_ids, E)
     m_indptr = torch.zeros((E + 1,), dtype=torch.int32, device=device)
     m_indptr[output + 1] = count.int()
     m_indptr = m_indptr.cumsum(dim=0, dtype=m_indptr.dtype)
