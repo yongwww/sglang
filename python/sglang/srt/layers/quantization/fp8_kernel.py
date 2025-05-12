@@ -22,12 +22,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import triton
 import triton.language as tl
+import flashinfer
+from flashinfer.gemm import gemm_fp8_nt_groupwise
 
 from sglang.srt.layers.quantization.deep_gemm import _ENABLE_JIT_DEEPGEMM
 from sglang.srt.utils import (
     direct_register_custom_op,
+    get_bool_env_var,
     get_device_core_count,
     get_device_name,
+    get_device_sm,
     is_cuda,
     is_hip,
     log_info_on_rank0,
@@ -47,6 +51,13 @@ if _is_cuda:
     from sglang.srt.layers.quantization.deep_gemm import (
         gemm_nt_f8f8bf16 as deep_gemm_gemm_nt_f8f8bf16,
     )
+
+_ENABLE_FLASHINFER_GEMM = False
+if is_cuda():
+    sm_version = get_device_sm()
+    if sm_version >= 100:
+        if get_bool_env_var("SGL_ENABLE_FLASHINFER_GEMM", default="false"):
+            _ENABLE_FLASHINFER_GEMM = True
 
 logger = logging.getLogger(__name__)
 
@@ -786,6 +797,12 @@ def w8a8_block_fp8_matmul(
             torch.ops.sglang.deep_gemm_fp8_fp8_bf16_nt(A, As, B, Bs, C)
         else:
             deep_gemm_gemm_nt_f8f8bf16((A, As), (B, Bs), C)
+    elif _ENABLE_FLASHINFER_GEMM:
+        print("############ YONGWWWW use flashinfer")
+        # transpose As, and Bs
+        new_As = As.transpose(0, 1).contiguous()
+        new_Bs = Bs.transpose(0, 1).contiguous()
+        gemm_fp8_nt_groupwise(A, B, new_As, new_Bs, C)
     else:
         configs = get_w8a8_block_fp8_configs(N, K, block_size[0], block_size[1])
         if configs:
