@@ -17,48 +17,44 @@ import triton.language as tl
 
 
 @triton.jit
-def mark_group_starts_kernel(x_ptr, flags_ptr, N: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+def compute_one_hot(topk_ids, one_hot, M: tl.constexpr, top_k: tl.constexpr):
     pid = tl.program_id(0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < N
-
-    x = tl.load(x_ptr + offsets, mask=mask, other=-1)
-    prev_x = tl.load(x_ptr + offsets - 1, mask=offsets > 0, other=-2)
-    is_new = (x != prev_x) | (offsets == 0)
-
-    tl.store(flags_ptr + offsets, is_new.to(tl.int32), mask=mask)
+    for i in range(0, top_k):
+        e = tl.load(topk_ids + pid * top_k + i)
+        tl.store(one_hot + e * M + pid, 1)
 
 
-def run_unique_consecutive_static(x: torch.Tensor, num_experts: int):
-    assert x.ndim == 1 and x.is_cuda
-    N = x.numel()
+@triton.jit
+def compute_padding_mapping(
+    m_indptr,
+    padded_m_indptr,
+    m_rank,
+    padded_m_rank,
+):
+    pid = tl.program_id(0)
+    m_start = tl.load(m_indptr + pid)
+    m_end = tl.load(m_indptr + pid + 1)
+    padded_m_start = tl.load(padded_m_indptr + pid)
+    for i in range(m_end - m_start):
+        tl.store(m_rank + m_start + i, m_start + i)
+        tl.store(padded_m_rank + m_start + i, padded_m_start + i)
 
-    vals_out = torch.empty(num_experts, dtype=x.dtype, device=x.device)
-    counts_out = torch.empty(num_experts, dtype=torch.long, device=x.device)
 
-    BLOCK_SIZE = 1024
-    flags = torch.empty(N, dtype=torch.int32, device=x.device)
-
-    mark_group_starts_kernel[(triton.cdiv(N, BLOCK_SIZE),)](
-        x_ptr=x, flags_ptr=flags, N=N, BLOCK_SIZE=BLOCK_SIZE
-    )
-
-    group_ids = flags.cumsum(0) - 1
-    num_unique = flags.sum()
-
-    mask = flags.to(x.dtype)
-    group_pos = group_ids * mask
-    masked_vals = x * mask
-
-    vals_out.zero_()
-    vals_out.scatter_add_(0, group_pos, masked_vals)
-
-    counts_out.zero_()
-    ones = torch.ones_like(group_ids, dtype=counts_out.dtype)
-    counts_out.scatter_add_(0, group_ids, ones)
-
-    return vals_out, counts_out, num_unique.view(1)
+@triton.jit
+def compute_ranking(
+    topk_ids,
+    one_hot_cumsum,
+    m_indptr,
+    token_ids_ranking,
+    M: tl.constexpr,
+    top_k: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    for i in range(0, top_k):
+        e = tl.load(topk_ids + pid * top_k + i)
+        offset = tl.load(one_hot_cumsum + e * M + pid)
+        m_start = tl.load(m_indptr + e)
+        tl.store(token_ids_ranking + m_start + offset - 1, pid * top_k + i)
 
 
 def fake_group_gemm(a, b, a_scale, b_scale, m_indptr, out):
@@ -70,7 +66,6 @@ def fake_group_gemm(a, b, a_scale, b_scale, m_indptr, out):
     assert out.shape == (cum_m, n)
     assert m_indptr.shape[0] == e + 1
     # assert m_indptr[-1] == cum_m
-
 
 
 def fused_experts_flashinfer(
@@ -148,24 +143,35 @@ def fused_experts_flashinfer(
 
     top_k = topk_ids.size(1)  # 9
 
-    # preparation
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
-        topk_ids, 1, E
+    one_hot = torch.zeros((E, M), dtype=torch.int32, device=device)
+    compute_one_hot[(M,)](topk_ids, one_hot, M, top_k)
+    one_hot_cumsum = one_hot.cumsum(dim=1, dtype=torch.int32)
+    expert_activated_count = one_hot_cumsum[::, -1]
+    m_len = torch.zeros((E + 1,), dtype=torch.int32, device=device)
+    m_len[1:] = expert_activated_count
+    m_indptr = m_len.cumsum(dim=0, dtype=torch.int32)
+    assert m_indptr[-1] == top_k * M
+    padded_m_indptr = (m_len + 3 - (m_len + 3) % 4).cumsum(dim=0, dtype=torch.int32)
+    m_rank = torch.zeros((m_indptr[-1],), dtype=m_indptr.dtype, device=m_indptr.device)
+    padded_m_rank = torch.zeros(
+        (m_indptr[-1],), dtype=m_indptr.dtype, device=m_indptr.device
     )
-    # output, count = expert_ids.unique_consecutive(return_counts=True)
-    output, count, _ = run_unique_consecutive_static(expert_ids, E)
-    m_indptr = torch.zeros((E + 1,), dtype=torch.int32, device=device)
-    m_indptr[output + 1] = count.int()
-    m_indptr = m_indptr.cumsum(dim=0, dtype=m_indptr.dtype)
+    compute_padding_mapping[(E,)](m_indptr, padded_m_indptr, m_rank, padded_m_rank)
+    token_ids_ranking = torch.zeros((m_indptr[-1],), dtype=torch.int32, device=device)
+    compute_ranking[(M,)](
+        topk_ids, one_hot_cumsum, m_indptr, token_ids_ranking, M, top_k
+    )
 
     # Group gemm 1
     # a_q: torch.Size([256, 7168]), dtype: torch.float8_e4m3fn, device: cuda:0
     # a1_scale: torch.Size([256, 56]), dtype: torch.float32
     device = a.device
-    a1 = torch.zeros((M * top_k, K), dtype=a.dtype, device=device)  # Keep as fp8
-    a1[::] = a[sorted_token_ids // top_k]  # Use quantized a_q
+    a1 = torch.zeros(
+        (padded_m_indptr[-1], K), dtype=a.dtype, device=device
+    )  # Keep as fp8
+    a1[padded_m_indptr] = a[token_ids_ranking[m_rank] // top_k]
     # Blocksize = 1
-    c1 = torch.zeros((M * top_k, N), dtype=out_dtype, device=device)
+    c1 = torch.zeros((padded_m_indptr[-1], N), dtype=out_dtype, device=device)
     a1_q, a1_scale = sglang_per_token_group_quant_fp8(a1, 128, column_major_scales=True)
     a1_scale = a1_scale.permute(1, 0)
     w1_scale = w1_scale.permute(0, 2, 1).contiguous()
@@ -190,7 +196,7 @@ def fused_experts_flashinfer(
     a2_scale = a2_scale.permute(1, 0)
     w2_scale = w2_scale.permute(0, 2, 1).contiguous()
 
-    c2 = torch.zeros((M * top_k, K), dtype=out_dtype, device=device)
+    c2 = torch.zeros((padded_m_indptr[-1], K), dtype=out_dtype, device=device)
     fake_group_gemm(
         a=intemediate_q,
         b=w2_q,
@@ -208,6 +214,6 @@ def fused_experts_flashinfer(
     #     out=C2,
     # )
 
-    # reuse a1 for the final result
-    a1[sorted_token_ids] = c2[::]
-    return a1.view((M, top_k, K)).sum(dim=1)
+    res = torch.zeros((m_indptr[-1], K), dtype=c2.dtype, device=c2.device)
+    res[token_ids_ranking[m_rank]] = c2[padded_m_rank]
+    return res.view((M, top_k, K)).sum(dim=1)
