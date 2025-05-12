@@ -8,8 +8,8 @@ from sgl_kernel import silu_and_mul
 
 import torch
 
-# import flashinfer
-# from flashinfer.gemm import group_gemm_fp8_nt_groupwise
+import flashinfer
+from flashinfer.gemm import group_gemm_fp8_nt_groupwise
 
 import torch
 import triton
@@ -100,6 +100,7 @@ def fused_experts_flashinfer(
     Returns:
     - torch.Tensor: The fp16 output tensor after applying the MoE layer.
     """
+    '''
     print(
         f"Input shapes of fused_experts_flashinfer:\n"
         f"  a: {a.shape} (dtype: {a.dtype})\n"
@@ -110,6 +111,7 @@ def fused_experts_flashinfer(
         f"  topk_weights: {topk_weights.shape} (dtype: {topk_weights.dtype})\n"
         f"  topk_ids: {topk_ids.shape} (dtype: {topk_ids.dtype})\n"
     )
+    '''
 
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert w1_q.dtype == torch.float8_e4m3fn
@@ -173,8 +175,9 @@ def fused_experts_flashinfer(
     a1_q, a1_scale = sglang_per_token_group_quant_fp8(a1, 128, column_major_scales=True)
     a1_scale = a1_scale.permute(1, 0)
     w1_scale = w1_scale.permute(0, 2, 1).contiguous()
-    print(a1_q.shape, a1_scale.shape)
-    print(w1_q.shape, w1_scale.shape)
+    # print(a1_q.shape, a1_scale.shape)
+    # print(w1_q.shape, w1_scale.shape)
+    """
     fake_group_gemm(
         a=a1_q,
         b=w1_q,
@@ -183,9 +186,15 @@ def fused_experts_flashinfer(
         m_indptr=m_indptr,
         out=c1,
     )
-    # group_gemm_fp8_nt_groupwise(
-    #     a=a1_q, b=w1_q, a_scale=a1_scale, b_scale=w1_scale, m_indptr=m_indptr, out=C1
-    # )
+    """
+    group_gemm_fp8_nt_groupwise(
+        a=a1_q,
+        b=w1_q,
+        a_scale=a1_scale,
+        b_scale=w1_scale,
+        m_indptr=m_indptr,
+        out=c1
+    )
 
     # C1: torch.Size([2304, 4096]), dtype: torch.bfloat16
 
@@ -200,6 +209,7 @@ def fused_experts_flashinfer(
     w2_scale = w2_scale.permute(0, 2, 1).contiguous()
 
     c2 = cache_mk
+    """
     fake_group_gemm(
         a=intemediate_q,
         b=w2_q,
@@ -208,14 +218,15 @@ def fused_experts_flashinfer(
         m_indptr=m_indptr,
         out=c2,
     )
-    # group_gemm_fp8_nt_groupwise(
-    #     a=intemediate_q,
-    #     b=w2_q,
-    #     a_scale=a2_scale,
-    #     b_scale=w2_scale,
-    #     m_indptr=m_indptr,
-    #     out=C2,
-    # )
+    """
+    group_gemm_fp8_nt_groupwise(
+        a=intemediate_q,
+        b=w2_q,
+        a_scale=a2_scale,
+        b_scale=w2_scale,
+        m_indptr=m_indptr,
+        out=c2,
+    )
 
     res = torch.zeros((M * top_k, K), dtype=c2.dtype, device=c2.device)
     res[token_ids_ranking[m_rank]] = c2[padded_m_rank]
