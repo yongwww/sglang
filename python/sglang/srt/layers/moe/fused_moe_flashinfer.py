@@ -150,14 +150,13 @@ def fused_experts_flashinfer(
     m_len = torch.zeros((E + 1,), dtype=torch.int32, device=device)
     m_len[1:] = expert_activated_count
     m_indptr = m_len.cumsum(dim=0, dtype=torch.int32)
-    assert m_indptr[-1] == top_k * M
     padded_m_indptr = (m_len + 3 - (m_len + 3) % 4).cumsum(dim=0, dtype=torch.int32)
-    m_rank = torch.zeros((m_indptr[-1],), dtype=m_indptr.dtype, device=m_indptr.device)
+    m_rank = torch.zeros((M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device)
     padded_m_rank = torch.zeros(
-        (m_indptr[-1],), dtype=m_indptr.dtype, device=m_indptr.device
+        (M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device
     )
     compute_padding_mapping[(E,)](m_indptr, padded_m_indptr, m_rank, padded_m_rank)
-    token_ids_ranking = torch.zeros((m_indptr[-1],), dtype=torch.int32, device=device)
+    token_ids_ranking = torch.zeros((M * top_k,), dtype=torch.int32, device=device)
     compute_ranking[(M,)](
         topk_ids, one_hot_cumsum, m_indptr, token_ids_ranking, M, top_k
     )
@@ -166,19 +165,23 @@ def fused_experts_flashinfer(
     # a_q: torch.Size([256, 7168]), dtype: torch.float8_e4m3fn, device: cuda:0
     # a1_scale: torch.Size([256, 56]), dtype: torch.float32
     device = a.device
-    a1 = torch.zeros(
-        (padded_m_indptr[-1], K), dtype=a.dtype, device=device
-    )  # Keep as fp8
-    a1[padded_m_indptr] = a[token_ids_ranking[m_rank] // top_k]
-    # Blocksize = 1
-    c1 = torch.zeros((padded_m_indptr[-1], N), dtype=out_dtype, device=device)
+    cache_mk = torch.zeros((top_k * M + 3 * E, K), dtype=a.dtype, device=device)
+    cache_mn = torch.zeros((top_k * M + 3 * E, N), dtype=out_dtype, device=device)
+    a1 = cache_mk
+    a1[padded_m_rank] = a[token_ids_ranking[m_rank] // top_k]
+    c1 = cache_mn
     a1_q, a1_scale = sglang_per_token_group_quant_fp8(a1, 128, column_major_scales=True)
     a1_scale = a1_scale.permute(1, 0)
     w1_scale = w1_scale.permute(0, 2, 1).contiguous()
     print(a1_q.shape, a1_scale.shape)
     print(w1_q.shape, w1_scale.shape)
     fake_group_gemm(
-        a=a1_q, b=w1_q, a_scale=a1_scale, b_scale=w1_scale, m_indptr=m_indptr, out=c1
+        a=a1_q,
+        b=w1_q,
+        a_scale=a1_scale,
+        b_scale=w1_scale,
+        m_indptr=m_indptr,
+        out=c1,
     )
     # group_gemm_fp8_nt_groupwise(
     #     a=a1_q, b=w1_q, a_scale=a1_scale, b_scale=w1_scale, m_indptr=m_indptr, out=C1
@@ -196,7 +199,7 @@ def fused_experts_flashinfer(
     a2_scale = a2_scale.permute(1, 0)
     w2_scale = w2_scale.permute(0, 2, 1).contiguous()
 
-    c2 = torch.zeros((padded_m_indptr[-1], K), dtype=out_dtype, device=device)
+    c2 = cache_mk
     fake_group_gemm(
         a=intemediate_q,
         b=w2_q,
@@ -214,6 +217,6 @@ def fused_experts_flashinfer(
     #     out=C2,
     # )
 
-    res = torch.zeros((m_indptr[-1], K), dtype=c2.dtype, device=c2.device)
+    res = torch.zeros((M * top_k, K), dtype=c2.dtype, device=c2.device)
     res[token_ids_ranking[m_rank]] = c2[padded_m_rank]
     return res.view((M, top_k, K)).sum(dim=1)
