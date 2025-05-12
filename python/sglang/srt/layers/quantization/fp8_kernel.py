@@ -798,11 +798,10 @@ def w8a8_block_fp8_matmul(
         else:
             deep_gemm_gemm_nt_f8f8bf16((A, As), (B, Bs), C)
     elif _ENABLE_FLASHINFER_GEMM:
-        print("############ YONGWWWW use flashinfer")
         # transpose As, and Bs
-        new_As = As.transpose(0, 1).contiguous()
-        new_Bs = Bs.transpose(0, 1).contiguous()
-        gemm_fp8_nt_groupwise(A, B, new_As, new_Bs, C)
+        As = As.transpose(0, 1).contiguous()
+        Bs = Bs.transpose(0, 1).contiguous()
+        gemm_fp8_nt_groupwise(A, B, As, Bs, out=C)
     else:
         configs = get_w8a8_block_fp8_configs(N, K, block_size[0], block_size[1])
         if configs:
