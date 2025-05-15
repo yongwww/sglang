@@ -1,19 +1,11 @@
-import functools
-import json
-import logging
-import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
-from sgl_kernel import silu_and_mul
-
-import torch
-
 import flashinfer
-from flashinfer.gemm import group_gemm_fp8_nt_groupwise
-
 import torch
 import triton
 import triton.language as tl
+from flashinfer.gemm import group_gemm_fp8_nt_groupwise
+from sgl_kernel import silu_and_mul
+
+from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
 
 
 @triton.jit
@@ -96,7 +88,8 @@ def fused_experts_flashinfer(
     - w2_scale (torch.Tensor): The fp32 scale to dequantize w2_q.
         Shape: [num_experts] or [num_experts, K]
     - topk_weights (torch.Tensor): The weights of each token->expert mapping.
-    - out_dtype (torch.Tensor): The output tensor type.
+    - topk_ids (torch.Tensor): Indices of the selected top-k experts for each token.
+            Shape: `(m, topk)`. Dtype: `torch.int32`.
     Returns:
     - torch.Tensor: The fp16 output tensor after applying the MoE layer.
     """
@@ -122,19 +115,6 @@ def fused_experts_flashinfer(
     assert w1_q.shape[0] == w1_scale.shape[0], "w1 scales expert number mismatch"
     assert w1_q.shape[0] == w2_scale.shape[0], "w2 scales expert number mismatch"
     assert a.dtype in [torch.half, torch.bfloat16], "Invalid output dtype"
-
-    # a: torch.Size([256, 7168]),
-    # w1_q: torch.Size([257, 4096, 7168]),
-    # w2_q: torch.Size([257, 7168, 2048]),
-    # w1_scale: torch.Size([257, 32, 56]),
-    # w2_scale: torch.Size([257, 56, 16]),
-    # topk_weights: torch.Size([256, 9]),
-    # topk_ids: torch.Size([256, 9])
-    # rep_a_q: torch.Size([2304, 7168]),
-    # w1_q: torch.Size([257, 4096, 7168]),
-    # topk_ids: torch.Size([256, 9])
-    # rep_a1_scales: torch.Size([2304, 56]),
-    # w1_scale: torch.Size([257, 32, 56])
 
     out_dtype = a.dtype
     device = a.device
@@ -186,17 +166,27 @@ def fused_experts_flashinfer(
         m_indptr=m_indptr,
         out=c1,
     )
+    print(
+        f"Input shapes of group_gemm_fp8_nt_groupwise:\n"
+        f"  a1_q: {a1_q.shape} (dtype: {a1_q.dtype})\n"
+        f"  w1_q: {w1_q.shape} (dtype: {w1_q.dtype})\n"
+        f"  a1_scale: {a1_scale.shape} (dtype: {a1_scale.dtype})\n"
+        f"  w1_scale: {w1_scale.shape} (dtype: {w1_scale.dtype})\n"
+        f"  m_indptr: {m_indptr.shape} (dtype: {m_indptr.dtype})\n"
+        f"  padded_m_indptr: {padded_m_indptr.shape} (dtype: {padded_m_indptr.dtype})\n"
+        f"  m_indptr: {m_indptr}\n"
+        f"  padded_m_indptr: {padded_m_indptr}\n"
+        f"  c1: {c1.shape} (dtype: {c1.dtype})\n"
+    )
     """
     group_gemm_fp8_nt_groupwise(
         a=a1_q,
         b=w1_q,
         a_scale=a1_scale,
         b_scale=w1_scale,
-        m_indptr=m_indptr,
+        m_indptr=padded_m_indptr,
         out=c1
     )
-
-    # C1: torch.Size([2304, 4096]), dtype: torch.bfloat16
 
     # silu and mul
     intermediate = silu_and_mul(c1)
@@ -224,7 +214,7 @@ def fused_experts_flashinfer(
         b=w2_q,
         a_scale=a2_scale,
         b_scale=w2_scale,
-        m_indptr=m_indptr,
+        m_indptr=padded_m_indptr,
         out=c2,
     )
 

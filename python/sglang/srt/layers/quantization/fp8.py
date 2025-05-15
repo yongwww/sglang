@@ -915,7 +915,6 @@ class Fp8MoEMethod:
             if ret is not None:
                 return ret
 
-        print(f"self.block_quant: {self.block_quant}\nself.quant_config.weight_block_size: {self.quant_config.weight_block_size}")
         if get_bool_env_var("USE_FLASHINFER_MOE") \
             and self.block_quant \
             and list(self.quant_config.weight_block_size) == [128, 128]:
