@@ -49,17 +49,6 @@ def compute_ranking(
         tl.store(token_ids_ranking + m_start + offset - 1, pid * top_k + i)
 
 
-def fake_group_gemm(a, b, a_scale, b_scale, m_indptr, out):
-    cum_m, k = a.shape
-    e, n, _ = b.shape
-    assert b.shape[2] == k
-    assert a_scale.shape == (k // 128, cum_m)
-    assert b_scale.shape == (e, k // 128, n // 128)
-    assert out.shape == (cum_m, n)
-    assert m_indptr.shape[0] == e + 1
-    # assert m_indptr[-1] == cum_m
-
-
 def fused_experts_flashinfer(
     a: torch.Tensor,
     w1_q: torch.Tensor,
@@ -69,7 +58,6 @@ def fused_experts_flashinfer(
     topk_weights: torch.Tensor,
     topk_ids: torch.Tensor,
 ) -> torch.Tensor:
-    from sglang.srt.layers.moe.fused_moe_triton.fused_moe import moe_align_block_size
 
     """
     This function computes a a8w8-quantized Mixture of Experts (MoE) layer
@@ -115,6 +103,8 @@ def fused_experts_flashinfer(
     assert w1_q.shape[0] == w1_scale.shape[0], "w1 scales expert number mismatch"
     assert w1_q.shape[0] == w2_scale.shape[0], "w2 scales expert number mismatch"
     assert a.dtype in [torch.half, torch.bfloat16], "Invalid output dtype"
+    assert w1_q.is_contiguous(), "Expert weights1 must be contiguous"
+    assert w2_q.is_contiguous(), "Expert weights2 must be contiguous"
 
     out_dtype = a.dtype
     device = a.device

@@ -71,8 +71,6 @@ from sglang.srt.utils import (
     set_weight_attrs,
 )
 
-from sglang.srt.layers.moe.fused_moe_flashinfer import fused_experts_flashinfer
-
 _is_hip = is_hip()
 _is_cuda = is_cuda()
 
@@ -918,6 +916,8 @@ class Fp8MoEMethod:
         if get_bool_env_var("USE_FLASHINFER_MOE") \
             and self.block_quant \
             and list(self.quant_config.weight_block_size) == [128, 128]:
+            from sglang.srt.layers.moe.fused_moe_flashinfer import fused_experts_flashinfer
+
             return fused_experts_flashinfer(
                 x,
                 layer.w13_weight,
