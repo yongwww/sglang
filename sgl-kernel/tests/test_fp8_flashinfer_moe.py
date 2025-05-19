@@ -7,23 +7,22 @@ K = 7168
 E = 257
 
 torch.manual_seed(42)
+random.seed(42)
 x_a = torch.rand([M, K], device="cuda", dtype=torch.bfloat16)
 w1_q = torch.rand([E, N, K], device="cuda", dtype=torch.float32).to(torch.float8_e4m3fn)
 w2_q = torch.rand([E, K, N // 2], device="cuda", dtype=torch.float32).to(
     torch.float8_e4m3fn
 )
-w1_scale = torch.rand([E, 32, 56], device="cuda", dtype=torch.float32)
-w2_scale = torch.rand([E, 56, 16], device="cuda", dtype=torch.float32)
-# topk_weights =  torch.rand([M, 9], device="cuda").to(torch.float32)
-topk_weights = torch.ones([M, 9], device="cuda", dtype=torch.float32)
-# topk_ids = torch.rand([M, 9], device="cuda").to(torch.int32)
-es = list(range(E))
+w1_scale = torch.rand([E, N // 128, K // 128], device="cuda", dtype=torch.float32)
+w2_scale = torch.rand([E, K // 128, N // 256], device="cuda", dtype=torch.float32)
+topk_weights = torch.rand([M, 9], device="cuda", dtype=torch.float32)
 topk_ids = torch.tensor(
-    [random.sample(es, 9) for _ in range(M)], device="cuda", dtype=torch.int32
-)
+    [random.sample(range(E), 9) for _ in range(M)], device="cuda", dtype=torch.int32
+).contiguous()
+print(topk_ids)
 
 out_dtype = torch.bfloat16
-out = torch.empty([834, 4096], dtype=out_dtype, device=x_a.device)
+out = torch.empty([M, K], dtype=out_dtype, device=x_a.device)
 
 
 def test_flashinfer_moe():
@@ -86,5 +85,5 @@ def test_sglang_moe():
 
 
 if __name__ == "__main__":
-    test_flashinfer_moe()
+    # test_flashinfer_moe()
     test_sglang_moe()
