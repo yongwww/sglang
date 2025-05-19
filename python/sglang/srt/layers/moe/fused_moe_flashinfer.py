@@ -58,7 +58,6 @@ def fused_experts_flashinfer(
     topk_weights: torch.Tensor,
     topk_ids: torch.Tensor,
 ) -> torch.Tensor:
-
     """
     This function computes a a8w8-quantized Mixture of Experts (MoE) layer
     using two sets of quantized weights, w1_q and w2_q, and top-k gating
@@ -81,7 +80,7 @@ def fused_experts_flashinfer(
     Returns:
     - torch.Tensor: The fp16 output tensor after applying the MoE layer.
     """
-    '''
+    """
     print(
         f"Input shapes of fused_experts_flashinfer:\n"
         f"  a: {a.shape} (dtype: {a.dtype})\n"
@@ -92,7 +91,7 @@ def fused_experts_flashinfer(
         f"  topk_weights: {topk_weights.shape} (dtype: {topk_weights.dtype})\n"
         f"  topk_ids: {topk_ids.shape} (dtype: {topk_ids.dtype})\n"
     )
-    '''
+    """
 
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert w1_q.dtype == torch.float8_e4m3fn
@@ -175,7 +174,7 @@ def fused_experts_flashinfer(
         a_scale=a1_scale,
         b_scale=w1_scale,
         m_indptr=padded_m_indptr,
-        out=c1
+        out=c1,
     )
 
     # silu and mul
