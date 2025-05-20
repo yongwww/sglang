@@ -209,4 +209,7 @@ def fused_experts_flashinfer(
 
     res = torch.zeros((M * top_k, K), dtype=c2.dtype, device=c2.device)
     res[token_ids_ranking[m_rank]] = c2[padded_m_rank]
-    return res.view((M, top_k, K)).sum(dim=1)
+
+    res = res.view(M, top_k, K)
+    weighted = res * topk_weights.to(res.dtype).unsqueeze(-1)  # (M, top_k, K)
+    return weighted.sum(dim=1)                                 # (M, K)

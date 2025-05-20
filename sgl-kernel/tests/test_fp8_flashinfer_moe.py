@@ -1,10 +1,11 @@
 import random
+
 import torch
 
-M = 256
-N = 4096
-K = 7168
-E = 257
+M = 7 # 256
+N = 256 # 4096
+K = 128 # 7168
+E = 17 # 257
 
 torch.manual_seed(42)
 random.seed(42)
@@ -19,7 +20,6 @@ topk_weights = torch.rand([M, 9], device="cuda", dtype=torch.float32)
 topk_ids = torch.tensor(
     [random.sample(range(E), 9) for _ in range(M)], device="cuda", dtype=torch.int32
 ).contiguous()
-print(topk_ids)
 
 out_dtype = torch.bfloat16
 out = torch.empty([M, K], dtype=out_dtype, device=x_a.device)
@@ -37,9 +37,7 @@ def test_flashinfer_moe():
         topk_weights,
         topk_ids,
     )
-    print(
-        f"flashinfer_out: {flashinfer_out}\nshape: {flashinfer_out.shape}, dtype: {flashinfer_out.dtype}"
-    )
+    return flashinfer_out
 
 
 def test_sglang_moe():
@@ -59,31 +57,10 @@ def test_sglang_moe():
         w2_scale=w2_scale,
         block_shape=[128, 128],
     )
-    print(f"sgl_out: {sgl_out}\nshape: {sgl_out.shape}, dtype: {sgl_out.dtype}")
-
-    """
-    Input tensor shapes:
-    hidden_states: torch.Size([256, 7168]) (dtype: torch.bfloat16)
-    w1: torch.Size([257, 4096, 7168]) (dtype: torch.float8_e4m3fn)
-    w2: torch.Size([257, 7168, 2048]) (dtype: torch.float8_e4m3fn)
-    topk_weights: torch.Size([256, 9]) (dtype: torch.float32)
-    topk_ids: torch.Size([256, 9]) (dtype: torch.int32)
-    w1_scale: torch.Size([257, 32, 56]) (dtype: torch.float32)
-    w2_scale: torch.Size([257, 56, 16]) (dtype: torch.float32)
-
-    inplace: True
-    activation: silu
-    apply_router_weight_on_input: False
-    use_fp8_w8a8: True
-    use_int8_w8a8: False
-    use_int8_w8a16: False
-    use_int4_w4a16: False
-    per_channel_quant: False
-    block_shape: [128, 128]
-    no_combine: False
-    """
+    return sgl_out
 
 
 if __name__ == "__main__":
-    # test_flashinfer_moe()
-    test_sglang_moe()
+    f_out = test_flashinfer_moe()
+    s_out = test_sglang_moe()
+    torch.testing.assert_close(f_out, s_out, rtol=1e-2, atol=1e-2)
