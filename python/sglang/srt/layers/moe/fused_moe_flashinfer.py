@@ -136,8 +136,9 @@ def fused_experts_flashinfer(
     # a_q: torch.Size([256, 7168]), dtype: torch.float8_e4m3fn, device: cuda:0
     # a1_scale: torch.Size([256, 56]), dtype: torch.float32
     device = a.device
-    cache_mk = torch.zeros((top_k * M + 3 * E, K), dtype=a.dtype, device=device)
-    cache_mn = torch.zeros((top_k * M + 3 * E, N), dtype=out_dtype, device=device)
+    max_m = top_k * M + 3 * E + 3 - (top_k * M + 3 * E + 3) % 4
+    cache_mk = torch.zeros((max_m, K), dtype=a.dtype, device=device)
+    cache_mn = torch.zeros((max_m, N), dtype=out_dtype, device=device)
     a1 = cache_mk
     a1[padded_m_rank] = a[token_ids_ranking[m_rank] // top_k]
     c1 = cache_mn
@@ -212,4 +213,4 @@ def fused_experts_flashinfer(
 
     res = res.view(M, top_k, K)
     weighted = res * topk_weights.to(res.dtype).unsqueeze(-1)  # (M, top_k, K)
-    return weighted.sum(dim=1)                                 # (M, K)
+    return weighted.sum(dim=1)  # (M, K)
