@@ -10,6 +10,9 @@ from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_qua
 
 @triton.jit
 def compute_one_hot(topk_ids, one_hot, M: tl.constexpr, top_k: tl.constexpr):
+    """
+    Compute one-hot encoding for top-k expert selections.
+    """
     pid = tl.program_id(0)
     for i in range(0, top_k):
         e = tl.load(topk_ids + pid * top_k + i)
@@ -23,6 +26,9 @@ def compute_padding_mapping(
     m_rank,
     padded_m_rank,
 ):
+    """
+    Compute mapping between original and padded indices for memory alignment.
+    """
     pid = tl.program_id(0)
     m_start = tl.load(m_indptr + pid)
     m_end = tl.load(m_indptr + pid + 1)
@@ -41,6 +47,9 @@ def compute_ranking(
     M: tl.constexpr,
     top_k: tl.constexpr,
 ):
+    """
+    Compute ranking of tokens for grouped operations.
+    """
     pid = tl.program_id(0)
     for i in range(0, top_k):
         e = tl.load(topk_ids + pid * top_k + i)
@@ -59,116 +68,99 @@ def fused_experts_flashinfer(
     topk_ids: torch.Tensor,
 ) -> torch.Tensor:
     """
-    This function computes a a8w8-quantized Mixture of Experts (MoE) layer
-    using two sets of quantized weights, w1_q and w2_q, and top-k gating
-    mechanism. The matrix multiplications are implemented with CUTLASS
-    grouped gemm.
-    Parameters:
-    - a (torch.Tensor): The input tensor to the MoE layer.
-        Shape: [M, K]
-    - w1_q (torch.Tensor): The first set of fp8-quantized expert weights.
-        Shape: [num_experts, K, 2N] (the weights are passed transposed)
-    - w2_q (torch.Tensor): The second set of fp8-quantized expert weights.
-        Shape: [num_experts, N, K] (the weights are passed transposed)
-    - w1_scale (torch.Tensor): The fp32 scale to dequantize w1_q.
-        Shape: [num_experts] or [num_experts, 2N]
-    - w2_scale (torch.Tensor): The fp32 scale to dequantize w2_q.
-        Shape: [num_experts] or [num_experts, K]
-    - topk_weights (torch.Tensor): The weights of each token->expert mapping.
-    - topk_ids (torch.Tensor): Indices of the selected top-k experts for each token.
-            Shape: `(m, topk)`. Dtype: `torch.int32`.
+    Compute a8w8-quantized Mixture of Experts (MoE) layer using FlashInfer backend. 
+
+    The key innovation is using grouped GEMM to efficiently batch computations
+    for tokens assigned to the same expert, avoiding the overhead of sparse
+    operations while maintaining the sparsity benefits of MoE.
+
+    Args:
+        a (torch.Tensor): Input activations with shape [M, K] where:
+            - M is the number of tokens (sequence length * batch size)
+            - K is the hidden dimension
+        w1_q (torch.Tensor): First expert weights (FP8 quantized) with shape [num_experts, K, 2N]:
+            - num_experts is the total number of experts
+            - K is the input hidden dimension
+            - 2N is twice the intermediate dimension (for SwiGLU gating)
+            - Weights are stored in transposed format for efficient GEMM
+        w2_q (torch.Tensor): Second expert weights (FP8 quantized) with shape [num_experts, N, K]:
+            - N is the intermediate dimension
+            - Weights are stored in transposed format
+        w1_scale (torch.Tensor): Dequantization scales for w1_q with shape:
+            - [num_experts] for per-expert scaling, or
+            - [num_experts, 2N] for per-expert per-channel scaling
+        w2_scale (torch.Tensor): Dequantization scales for w2_q with shape:
+            - [num_experts] for per-expert scaling, or
+            - [num_experts, K] for per-expert per-channel scaling
+        topk_weights (torch.Tensor): Routing weights for selected experts [M, top_k]:
+            - Contains the softmax-normalized weights for each token-expert pair
+        topk_ids (torch.Tensor): Selected expert indices [M, top_k]:
+            - Contains the expert IDs chosen by the gating network
+            - Must have dtype torch.int32
+
     Returns:
-    - torch.Tensor: The fp16 output tensor after applying the MoE layer.
+        torch.Tensor: MoE layer output with shape [M, K], same dtype as input `a`
     """
-    """
-    print(
-        f"Input shapes of fused_experts_flashinfer:\n"
-        f"  a: {a.shape} (dtype: {a.dtype})\n"
-        f"  w1_q: {w1_q.shape} (dtype: {w1_q.dtype})\n"
-        f"  w2_q: {w2_q.shape} (dtype: {w2_q.dtype})\n"
-        f"  w1_scale: {w1_scale.shape} (dtype: {w1_scale.dtype})\n"
-        f"  w2_scale: {w2_scale.shape} (dtype: {w2_scale.dtype})\n"
-        f"  topk_weights: {topk_weights.shape} (dtype: {topk_weights.dtype})\n"
-        f"  topk_ids: {topk_ids.shape} (dtype: {topk_ids.dtype})\n"
-    )
-    """
+    assert topk_weights.shape == topk_ids.shape, f"topk shape mismatch: weights {topk_weights.shape} vs ids {topk_ids.shape}"
+    assert w1_q.dtype == torch.float8_e4m3fn, f"w1_q must be FP8, got {w1_q.dtype}"
+    assert w2_q.dtype == torch.float8_e4m3fn, f"w2_q must be FP8, got {w2_q.dtype}"
+    assert a.shape[1] == w1_q.shape[-1], f"Input-weight dimension mismatch: {a.shape[1]} vs {w1_q.shape[-1]}"
+    assert w1_q.shape[1] == w2_q.shape[2] * 2, f"Weight dimension mismatch: w1 {w1_q.shape[1]} vs w2*2 {w2_q.shape[2] * 2}"
+    assert w1_q.shape[0] == w2_q.shape[0], f"Expert count mismatch: {w1_q.shape[0]} vs {w2_q.shape[0]}"
+    assert w1_q.shape[0] == w1_scale.shape[0], f"w1 scale expert count mismatch: {w1_q.shape[0]} vs {w1_scale.shape[0]}"
+    assert w1_q.shape[0] == w2_scale.shape[0], f"w2 scale expert count mismatch: {w1_q.shape[0]} vs {w2_scale.shape[0]}"
+    assert a.dtype in [torch.half, torch.bfloat16], f"Invalid input dtype: {a.dtype}"
+    assert w1_q.is_contiguous(), "Expert weights w1_q must be contiguous"
+    assert w2_q.is_contiguous(), "Expert weights w2_q must be contiguous"
 
-    assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
-    assert w1_q.dtype == torch.float8_e4m3fn
-    assert w2_q.dtype == torch.float8_e4m3fn
-    assert a.shape[1] == w1_q.shape[-1], "Hidden size mismatch"
-    assert w1_q.shape[1] == w2_q.shape[2] * 2, "Hidden size mismatch"
-    assert w1_q.shape[0] == w2_q.shape[0], "Weights expert number mismatch"
-    assert w1_q.shape[0] == w1_scale.shape[0], "w1 scales expert number mismatch"
-    assert w1_q.shape[0] == w2_scale.shape[0], "w2 scales expert number mismatch"
-    assert a.dtype in [torch.half, torch.bfloat16], "Invalid output dtype"
-    assert w1_q.is_contiguous(), "Expert weights1 must be contiguous"
-    assert w2_q.is_contiguous(), "Expert weights2 must be contiguous"
-
+    # Extract tensor properties
     out_dtype = a.dtype
     device = a.device
-    M = a.size(0)  # 256
-    N = w1_q.size(1)  # 4096
-    K = w2_q.size(1)  # 7168
-    E = w1_q.size(0)  # 257
+    M = a.size(0)  # Number of tokens
+    N = w1_q.size(1)  # Intermediate dimension * 2 (for SwiGLU)
+    K = w2_q.size(1)  # Hidden dimension
+    E = w1_q.size(0)  # Number of experts
+    top_k = topk_ids.size(1)  # Number of experts per token
 
-    top_k = topk_ids.size(1)  # 9
-
+    # Build one-hot matrix indicating which experts are selected for each token
     one_hot = torch.zeros((E, M), dtype=torch.int32, device=device)
     compute_one_hot[(M,)](topk_ids, one_hot, M, top_k)
     one_hot_cumsum = one_hot.cumsum(dim=1, dtype=torch.int32)
-    expert_activated_count = one_hot_cumsum[::, -1]
+    expert_activated_count = one_hot_cumsum[::, -1]  # Total tokens per expert
+
+    # Create indptr arrays for grouped GEMM
     m_len = torch.zeros((E + 1,), dtype=torch.int32, device=device)
     m_len[1:] = expert_activated_count
     m_indptr = m_len.cumsum(dim=0, dtype=torch.int32)
-    padded_m_indptr = (m_len + 3 - (m_len + 3) % 4).cumsum(dim=0, dtype=torch.int32)
-    m_rank = torch.zeros((M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device)
-    padded_m_rank = torch.zeros(
-        (M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device
-    )
-    compute_padding_mapping[(E,)](m_indptr, padded_m_indptr, m_rank, padded_m_rank)
-    token_ids_ranking = torch.zeros((M * top_k,), dtype=torch.int32, device=device)
-    compute_ranking[(M,)](
-        topk_ids, one_hot_cumsum, m_indptr, token_ids_ranking, M, top_k
-    )
 
-    # Group gemm 1
-    # a_q: torch.Size([256, 7168]), dtype: torch.float8_e4m3fn, device: cuda:0
-    # a1_scale: torch.Size([256, 56]), dtype: torch.float32
-    device = a.device
+    # pad to multiple of 4
+    padded_m_indptr = (m_len + 3 - (m_len + 3) % 4).cumsum(dim=0, dtype=torch.int32)
+
+    # Compute mappings between original and padded indices
+    m_rank = torch.zeros((M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device)
+    padded_m_rank = torch.zeros((M * top_k,), dtype=m_indptr.dtype, device=m_indptr.device)
+    compute_padding_mapping[(E,)](m_indptr, padded_m_indptr, m_rank, padded_m_rank)
+
+    # Determine the order of token processing for efficient batching
+    token_ids_ranking = torch.zeros((M * top_k,), dtype=torch.int32, device=device)
+    compute_ranking[(M,)](topk_ids, one_hot_cumsum, m_indptr, token_ids_ranking, M, top_k)
+
+    # Allocate workspace tensors with padding
     max_m = top_k * M + 3 * E + 3 - (top_k * M + 3 * E + 3) % 4
     cache_mk = torch.zeros((max_m, K), dtype=a.dtype, device=device)
     cache_mn = torch.zeros((max_m, N), dtype=out_dtype, device=device)
+
+    # Arrange input tokens according to expert grouping
     a1 = cache_mk
     a1[padded_m_rank] = a[token_ids_ranking[m_rank] // top_k]
-    c1 = cache_mn
+
+    # Quantize input activations to FP8 with groupwise scaling
     a1_q, a1_scale = sglang_per_token_group_quant_fp8(a1, 128, column_major_scales=True)
-    a1_scale = a1_scale.permute(1, 0)
+    a1_scale = a1_scale.permute(1, 0)  # Transpose for GEMM compatibility
     w1_scale = w1_scale.permute(0, 2, 1).contiguous()
-    # print(a1_q.shape, a1_scale.shape)
-    # print(w1_q.shape, w1_scale.shape)
-    """
-    fake_group_gemm(
-        a=a1_q,
-        b=w1_q,
-        a_scale=a1_scale,
-        b_scale=w1_scale,
-        m_indptr=m_indptr,
-        out=c1,
-    )
-    print(
-        f"Input shapes of group_gemm_fp8_nt_groupwise:\n"
-        f"  a1_q: {a1_q.shape} (dtype: {a1_q.dtype})\n"
-        f"  w1_q: {w1_q.shape} (dtype: {w1_q.dtype})\n"
-        f"  a1_scale: {a1_scale.shape} (dtype: {a1_scale.dtype})\n"
-        f"  w1_scale: {w1_scale.shape} (dtype: {w1_scale.dtype})\n"
-        f"  m_indptr: {m_indptr.shape} (dtype: {m_indptr.dtype})\n"
-        f"  padded_m_indptr: {padded_m_indptr.shape} (dtype: {padded_m_indptr.dtype})\n"
-        f"  m_indptr: {m_indptr}\n"
-        f"  padded_m_indptr: {padded_m_indptr}\n"
-        f"  c1: {c1.shape} (dtype: {c1.dtype})\n"
-    )
-    """
+
+    # Execute first grouped GEMM: a1_q @ w1_q -> c1
+    c1 = cache_mn
     group_gemm_fp8_nt_groupwise(
         a=a1_q,
         b=w1_q,
@@ -178,27 +170,17 @@ def fused_experts_flashinfer(
         out=c1,
     )
 
-    # silu and mul
     intermediate = silu_and_mul(c1)
 
-    # Group gemm 2
+    # Quantize intermediate activations
     intemediate_q, a2_scale = sglang_per_token_group_quant_fp8(
         intermediate, 128, column_major_scales=True
     )
-    a2_scale = a2_scale.permute(1, 0)
-    w2_scale = w2_scale.permute(0, 2, 1).contiguous()
+    a2_scale = a2_scale.permute(1, 0)  # Transpose for GEMM compatibility
+    w2_scale = w2_scale.permute(0, 2, 1).contiguous()  # Prepare weight scales
 
+    # Execute second grouped GEMM: intermediate_q @ w2_q -> c2
     c2 = cache_mk
-    """
-    fake_group_gemm(
-        a=intemediate_q,
-        b=w2_q,
-        a_scale=a2_scale,
-        b_scale=w2_scale,
-        m_indptr=m_indptr,
-        out=c2,
-    )
-    """
     group_gemm_fp8_nt_groupwise(
         a=intemediate_q,
         b=w2_q,
@@ -208,9 +190,11 @@ def fused_experts_flashinfer(
         out=c2,
     )
 
+    # Rearrange expert outputs back to original token order
     res = torch.zeros((M * top_k, K), dtype=c2.dtype, device=c2.device)
     res[token_ids_ranking[m_rank]] = c2[padded_m_rank]
 
+    # Reshape to [M, top_k, K] and apply routing weights
     res = res.view(M, top_k, K)
-    weighted = res * topk_weights.to(res.dtype).unsqueeze(-1)  # (M, top_k, K)
-    return weighted.sum(dim=1)  # (M, K)
+    weighted = res * topk_weights.to(res.dtype).unsqueeze(-1)  # [M, top_k, K]
+    return weighted.sum(dim=1)  # [M, K]
