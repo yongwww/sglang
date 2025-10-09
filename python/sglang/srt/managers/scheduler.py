@@ -532,7 +532,7 @@ class Scheduler(
         self.new_token_ratio = self.init_new_token_ratio
 
         # Init watchdog thread
-        self.watchdog_timeout = server_args.watchdog_timeout
+        self.watchdog_timeout = 3000 #server_args.watchdog_timeout
         t = threading.Thread(target=self.watchdog_thread, daemon=True)
         t.start()
         self.parent_process = psutil.Process().parent()

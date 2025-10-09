@@ -83,6 +83,13 @@ from sglang.srt.utils import (
     use_intel_amx_backend,
 )
 
+try:
+    from tmp_trace.fused_moe_dump import log_fused_moe_inputs
+except ImportError:
+    log_fused_moe_inputs = None
+
+
+
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
         CombineInput,
@@ -1140,6 +1147,34 @@ class Fp8MoEMethod(FusedMoEMethodBase):
             if topk_config.correction_bias is None
             else topk_config.correction_bias.to(x.dtype)
         )
+
+        local_expert_offset = layer.moe_ep_rank * layer.num_local_experts
+        effective_routed_scaling_factor = (
+            routed_scaling_factor if routed_scaling_factor is not None else 1.0
+        )
+        routing_logits_fp32 = router_logits.to(torch.float32)
+
+        # print("local_expert_offset:", local_expert_offset)
+        # print("local_num_experts:", layer.num_local_experts)
+
+        if log_fused_moe_inputs is not None:
+            try:
+                log_fused_moe_inputs(
+                    routing_logits=routing_logits_fp32,
+                    routing_bias=correction_bias,
+                    hidden_states=a_q,
+                    hidden_states_scale=a_sf_t,
+                    gemm1_weights=layer.w13_weight,
+                    gemm1_weights_scale=layer.w13_weight_scale_inv,
+                    gemm2_weights=layer.w2_weight,
+                    gemm2_weights_scale=layer.w2_weight_scale_inv,
+                    local_expert_offset=local_expert_offset,
+                    routed_scaling_factor=effective_routed_scaling_factor,
+                )
+            except Exception as err:
+                logger.exception(
+                    "Failed to log fused MoE inputs for seq %s", routing_logits_fp32.shape[0]
+                )
 
         return trtllm_fp8_block_scale_moe(
             routing_logits=router_logits.to(torch.float32),
