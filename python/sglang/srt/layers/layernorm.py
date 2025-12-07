@@ -50,12 +50,15 @@ _flashinfer_layernorm_available = False
 
 if _is_cuda or _is_xpu:
     if _is_flashinfer_available:
+        # print("flashinfer layernorm available")
         try:
+            import flashinfer_bench
             from flashinfer.norm import layernorm
 
             _flashinfer_layernorm_available = True
         except (ImportError, AttributeError):
             _flashinfer_layernorm_available = False
+        # print("flashinfer layernorm available", _flashinfer_layernorm_available)
     else:
         _flashinfer_layernorm_available = False
 
