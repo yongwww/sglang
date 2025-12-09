@@ -54,6 +54,7 @@ if _is_cuda or _is_xpu:
         try:
             import flashinfer_bench
             from flashinfer.norm import layernorm
+            from flashinfer.norm import fused_add_rmsnorm
 
             _flashinfer_layernorm_available = True
         except (ImportError, AttributeError):
@@ -62,8 +63,9 @@ if _is_cuda or _is_xpu:
     else:
         _flashinfer_layernorm_available = False
 
+    from flashinfer.norm import fused_add_rmsnorm
     from sgl_kernel import (
-        fused_add_rmsnorm,
+        # fused_add_rmsnorm,
         gemma_fused_add_rmsnorm,
         gemma_rmsnorm,
         rmsnorm,
