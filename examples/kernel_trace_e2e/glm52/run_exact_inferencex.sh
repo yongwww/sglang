@@ -45,6 +45,7 @@ docker_args=(
   -e MODEL_PATH="$MODEL_PATH"
   -e TP=8 -e CONC=8 -e EP_SIZE=1 -e DP_ATTENTION=false
   -e KV_OFFLOADING=dram -e KV_OFFLOAD_BACKEND=hicache
+  -e 'KV_OFFLOAD_BACKEND_METADATA={"name":"hicache"}'
   -e TOTAL_CPU_DRAM_GB=1889
   -e RESULT_DIR=/results -e AGENTIC_OUTPUT_DIR=/results
   -e RESULT_FILENAME="glm52_b300_${MODE}"
